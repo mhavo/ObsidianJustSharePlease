@@ -1,0 +1,4 @@
+data/
+quotes/
+*.md
+!public/*.md
