@@ -116,7 +116,7 @@ Imported shares can be updated and deleted only if they live on your server, for
 
 ```sh
 npm ci && npx vitest run && npm run build             # plugin
-node --test server/viewer-tests/                       # viewer
+node --test "server/viewer-tests/*.test.mjs"                       # viewer
 cd server && go vet ./... && go test -race ./...       # server
 ```
 

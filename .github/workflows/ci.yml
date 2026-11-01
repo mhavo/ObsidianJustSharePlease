@@ -34,7 +34,7 @@ jobs:
         with:
           node-version: 24
       - name: Test
-        run: node --test server/viewer-tests/
+        run: node --test "server/viewer-tests/*.test.mjs"
 
   plugin:
     name: Plugin
