@@ -105,6 +105,24 @@ h1:hover .header-anchor, h2:hover .header-anchor, h3:hover .header-anchor, h4:ho
     text-align: center;
 }
 
+#language-select button {
+    font: inherit;
+    color: #9275f0;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-decoration-line: underline;
+}
+
+#language-select button:hover {
+    color: #a48cf2;
+}
+
+#language-select button[aria-pressed="true"] {
+    font-weight: bold;
+}
+
 input[type=checkbox] {
     -webkit-appearance: none;
     appearance: none;

@@ -1,3 +1,6 @@
+const { getIdFromHash, classifyId, formatParts } = JspViewer;
+const LANGUAGE_STORAGE_KEY = "jsp-language";
+
 let md = markdownit({
     html: true,
     linkify: true,
@@ -24,16 +27,17 @@ md.use(markdownitCheckbox);
 
 let rulesToReplace = [
     // prepend current file id to footnotes
-    ["footnote_ref", [/href="#(fn\d+)"/, `href="#${getId() ?? ""}-$1"`]],
-    ["footnote_open", [/id="(fn\d+)"/, `id="${getId() ?? ""}-$1"`]],
+    ["footnote_ref", /href="#(fn\d+)"/, id => `href="#${id}-$1"`],
+    ["footnote_open", /id="(fn\d+)"/, id => `id="${id}-$1"`],
     // prepend current file id to footnote refs
-    ["footnote_ref", [/id="(fnref\d+)"/, `id="${getId() ?? ""}-$1"`]],
-    ["footnote_anchor", [/href="#(fnref\d+)"/, `href="#${getId() ?? ""}-$1"`]]
+    ["footnote_ref", /id="(fnref\d+)"/, id => `id="${id}-$1"`],
+    ["footnote_anchor", /href="#(fnref\d+)"/, id => `href="#${id}-$1"`]
 ];
-for (let replacement of rulesToReplace) {
-    let prevRule = md.renderer.rules[replacement[0]];
-    md.renderer.rules[replacement[0]] = (tokens, idx, options, env, self) => {
-        return prevRule(tokens, idx, options, env, self).replace(...replacement[1]);
+for (let [rule, pattern, replacement] of rulesToReplace) {
+    let prevRule = md.renderer.rules[rule];
+    md.renderer.rules[rule] = (tokens, idx, options, env, self) => {
+        // the id is only ever empty or alphanumeric here (validated in display())
+        return prevRule(tokens, idx, options, env, self).replace(pattern, replacement(getId() ?? ""));
     };
 }
 
@@ -41,6 +45,15 @@ let main = $("#main");
 let noteFooter = $("#note-footer");
 let download = $("#download-markdown");
 let open = $("#open-in-obsidian");
+
+let language = JspI18n.resolveLanguage(readStoredLanguage(), navigator.language);
+// what #main currently shows when it is a UI message rather than a note, so it can be re-rendered on language change
+let currentMessage = null;
+// the last loaded note footer data, so it can be re-rendered on language change
+let currentFooter = null;
+
+$("#language-select").on("click", "button", e => setLanguage(e.currentTarget.dataset.lang));
+applyLanguage();
 
 $(window).on("hashchange", e => {
     let oldUrl = e.originalEvent?.oldURL;
@@ -51,13 +64,20 @@ $(window).on("hashchange", e => {
 display();
 
 function display() {
-    main.html(`<div class="center-message"><p>Loading...</p></div>`);
-    noteFooter.html("");
+    showMessage({ key: "loading" });
+    clearNoteFooter();
     let id = getId();
+    let kind = classifyId(id);
+    if (kind === "invalid") {
+        showMessage({ key: "notFound", params: { id }, homeLink: true });
+        return;
+    }
     $.ajax({
         method: "get",
-        url: id ? `share.php?id=${id}` : "index.md",
+        url: kind === "valid" ? `share.php?id=${encodeURIComponent(id)}` : "index.md",
+        dataType: "text",
         success: t => {
+            currentMessage = null;
             main.html(DOMPurify.sanitize(md.render(t)));
 
             $(() => {
@@ -70,10 +90,10 @@ function display() {
                     window.document.title = heading;
                 }
 
-                // scroll to anchor
-                let element = $(window.location.hash);
-                if (element.length)
-                    $(window).scrollTop(element.offset().top);
+                // scroll to anchor (looked up by id rather than as a jQuery selector, so the hash is never parsed as a selector)
+                let element = findHashTarget();
+                if (element)
+                    $(window).scrollTop($(element).offset().top);
 
                 // set download links
                 download.attr("download", `${window.document.title}.md`);
@@ -81,56 +101,150 @@ function display() {
                 open.attr("href", `obsidian://new?name=${encodeURI(window.document.title)}&content=${encodeURIComponent(t)}`);
 
                 // load note footer with publication time (only for shared notes)
-                if (id) {
+                if (kind === "valid") {
                     loadNoteFooter(id);
                 }
             });
         },
-        error: (r, s, e) => main.html(`<div class="center-message"><p>Error loading shared note with id <code>${id}</code>: <code>${s} ${e}</code></p><p><a href="#">Home</a></p></div>`)
+        error: (r, s, e) => {
+            if (r.status === 404)
+                showMessage({ key: "notFound", params: { id }, homeLink: true });
+            else
+                showMessage({ key: "errorLoading", params: { id, details: `${s} ${e}` }, homeLink: true });
+        }
     });
 }
 
 function loadNoteFooter(id) {
+    let encodedId = encodeURIComponent(id);
     // Fetch meta and quote in parallel
     Promise.all([
-        $.ajax({ method: "get", url: `share.php?meta&id=${id}` }).catch(() => null),
-        $.ajax({ method: "get", url: "share.php?quote" }).catch(() => null)
+        $.ajax({ method: "get", url: `share.php?meta&id=${encodedId}`, dataType: "json" }).catch(() => null),
+        $.ajax({ method: "get", url: "share.php?quote", dataType: "json" }).catch(() => null)
     ]).then(([meta, quote]) => {
-        let footerHtml = '';
-
-        // Add timestamp if available
-        if (meta && meta.created) {
-            let date = new Date(meta.created * 1000);
-            let formatted = date.toLocaleDateString(undefined, {
-                day: "numeric",
-                month: "numeric",
-                year: "numeric",
-                hour: "2-digit",
-                minute: "2-digit"
-            });
-            footerHtml += `<p class="note-timestamp">Shared: ${formatted}</p>`;
-        }
-
-        // Add quote if available
-        if (quote && quote.quote) {
-            footerHtml += `<p class="note-quote">"${quote.quote}"</p>`;
-            if (quote.source) {
-                footerHtml += `<p class="note-quote-source">— <em>${quote.source}</em></p>`;
-            }
-        }
-
-        // Only show footer if there's content
-        if (footerHtml) {
-            noteFooter.html('<div class="note-footer-divider"></div>' + footerHtml);
-        }
+        // ignore the result if another note was opened in the meantime
+        if (getId() !== id)
+            return;
+        currentFooter = { meta, quote };
+        renderNoteFooter();
     });
 }
 
+function clearNoteFooter() {
+    currentFooter = null;
+    noteFooter.empty();
+}
+
+function renderNoteFooter() {
+    noteFooter.empty();
+    if (!currentFooter)
+        return;
+    let { meta, quote } = currentFooter;
+    let parts = [];
+
+    // Add timestamp if available
+    if (meta && meta.created) {
+        let date = new Date(meta.created * 1000);
+        let formatted = date.toLocaleDateString(undefined, {
+            day: "numeric",
+            month: "numeric",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit"
+        });
+        parts.push($("<p>").addClass("note-timestamp").text(t("shared").replace("{date}", formatted)));
+    }
+
+    // Add quote if available (always inserted as text, never as HTML)
+    if (quote && quote.quote) {
+        parts.push($("<p>").addClass("note-quote").text(`"${quote.quote}"`));
+        if (quote.source) {
+            parts.push($("<p>").addClass("note-quote-source").append(document.createTextNode("— "), $("<em>").text(String(quote.source))));
+        }
+    }
+
+    // Only show footer if there's content
+    if (parts.length)
+        noteFooter.append($("<div>").addClass("note-footer-divider"), ...parts);
+}
+
+// Shows a UI message in #main. Parameters are rendered as <code> text nodes.
+function showMessage(message) {
+    currentMessage = message;
+    renderMessage();
+}
+
+function renderMessage() {
+    if (!currentMessage)
+        return;
+    let p = $("<p>").append(buildNodes(t(currentMessage.key), currentMessage.params || {}, value => $("<code>").text(value)));
+    let box = $("<div>").addClass("center-message").append(p);
+    if (currentMessage.homeLink)
+        box.append($("<p>").append($("<a>").attr("href", "#").text(t("home"))));
+    main.empty().append(box);
+}
+
+// Turns a translated template into DOM nodes; text is always inserted as text nodes.
+function buildNodes(template, params, renderParam) {
+    return formatParts(template, params).map(part =>
+        part.type === "text" ? document.createTextNode(part.value) : renderParam(String(part.value), part.name));
+}
+
+function renderStaticStrings() {
+    $("#footer-credit").empty().append(buildNodes(t("createdUsing"), {
+        app: "Just Share Please",
+        obsidian: "Obsidian"
+    }, (value, name) => $("<a>").attr("href", name === "app" ? "/" : "https://obsidian.md").text(value)));
+    download.text(t("downloadMarkdown"));
+    open.text(t("copyToObsidian"));
+    $("#language-select").attr("aria-label", t("language"));
+    $("#language-select button").each((_, b) => b.setAttribute("aria-pressed", String(b.dataset.lang === language)));
+}
+
+function applyLanguage() {
+    document.documentElement.lang = language;
+    renderStaticStrings();
+    renderMessage();
+    renderNoteFooter();
+}
+
+function setLanguage(lang) {
+    if (!JspI18n.languages.includes(lang) || lang === language)
+        return;
+    language = lang;
+    try {
+        localStorage.setItem(LANGUAGE_STORAGE_KEY, lang);
+    } catch (e) {
+        // storage may be unavailable (private mode, blocked site data); the choice then lasts for this page only
+    }
+    applyLanguage();
+}
+
+function readStoredLanguage() {
+    try {
+        return localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    } catch (e) {
+        return null;
+    }
+}
+
+function t(key) {
+    return JspI18n.translate(language, key);
+}
+
+function findHashTarget() {
+    let hash = window.location.hash;
+    if (!hash || hash.length < 2)
+        return null;
+    let target = hash.substring(1);
+    try {
+        target = decodeURIComponent(target);
+    } catch (e) {
+        // keep the raw value if it is not valid percent-encoding
+    }
+    return document.getElementById(target);
+}
+
 function getId(hash) {
-    hash ||= window.location.hash;
-    if (!hash)
-        return undefined;
-    // hashes consist of the file id, a dash and then the permalink anchor name
-    let dash = hash.indexOf("-");
-    return hash.substring(1, dash > 0 ? dash : hash.length);
+    return getIdFromHash(hash || window.location.hash);
 }
