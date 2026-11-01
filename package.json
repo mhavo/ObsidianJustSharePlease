@@ -1,6 +1,6 @@
 {
     "name": "just-share-please-selfhosted",
-    "version": "0.3.0",
+    "version": "1.0.0",
     "description": "Share individual notes via an anonymized link on your own self-hosted Just Share Please server.",
     "main": "main.js",
     "scripts": {

@@ -1,7 +1,7 @@
 {
     "id": "just-share-please-selfhosted",
     "name": "Just Share Please (Self-hosted)",
-    "version": "0.3.0",
+    "version": "1.0.0",
     "minAppVersion": "1.11.0",
     "description": "Share individual notes via an anonymized link on your own self-hosted Just Share Please server.",
     "author": "Miika Havo",
