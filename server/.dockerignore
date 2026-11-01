@@ -1,3 +1,6 @@
 data/
+quotes/
 *.md
 !public/*.md
+Dockerfile
+docker-compose.yml

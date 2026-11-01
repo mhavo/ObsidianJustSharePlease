@@ -1,0 +1,97 @@
+package main
+
+import (
+	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const token = "0123456789abcdef0123456789abcdef"
+
+func envFrom(m map[string]string) func(string) string {
+	return func(k string) string { return m[k] }
+}
+
+func TestConfigDefaults(t *testing.T) {
+	c, err := loadConfig(envFrom(map[string]string{"JSP_UPLOAD_TOKEN": token}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Listen != ":80" || c.DataDir != "/var/www/data" || c.QuotesFile != "/var/www/quotes/quotes.csv" ||
+		c.Token != token || c.AllowAnonymous || c.MaxBodyBytes != 20<<20 {
+		t.Errorf("defaults: %+v", c)
+	}
+	want := []string{"127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"}
+	if len(c.TrustedProxies) != len(want) {
+		t.Fatalf("proxies: %v", c.TrustedProxies)
+	}
+	for i, p := range c.TrustedProxies {
+		if p.String() != want[i] {
+			t.Errorf("proxy %d = %s, want %s", i, p, want[i])
+		}
+	}
+}
+
+func TestConfigOverrides(t *testing.T) {
+	c, err := loadConfig(envFrom(map[string]string{
+		"JSP_UPLOAD_TOKEN":    token,
+		"JSP_LISTEN":          "127.0.0.1:8080",
+		"JSP_DATA_DIR":        "/d",
+		"JSP_QUOTES_FILE":     "/q.csv",
+		"JSP_MAX_BODY_BYTES":  "100",
+		"JSP_TRUSTED_PROXIES": " 10.1.0.0/16 , 192.0.2.1 ",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Listen != "127.0.0.1:8080" || c.DataDir != "/d" || c.QuotesFile != "/q.csv" || c.MaxBodyBytes != 100 {
+		t.Errorf("%+v", c)
+	}
+	if len(c.TrustedProxies) != 2 || c.TrustedProxies[1] != netip.MustParsePrefix("192.0.2.1/32") {
+		t.Errorf("proxies: %v", c.TrustedProxies)
+	}
+	c, err = loadConfig(envFrom(map[string]string{"JSP_UPLOAD_TOKEN": token, "JSP_TRUSTED_PROXIES": ""}))
+	if err != nil || len(c.TrustedProxies) == 0 {
+		t.Errorf("empty JSP_TRUSTED_PROXIES should mean default: %v %v", c.TrustedProxies, err)
+	}
+}
+
+func TestConfigTokenFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	os.WriteFile(path, []byte(token+"\n"), 0o600)
+	c, err := loadConfig(envFrom(map[string]string{"JSP_UPLOAD_TOKEN_FILE": path}))
+	if err != nil || c.Token != token {
+		t.Errorf("token %q, err %v", c.Token, err)
+	}
+}
+
+func TestConfigErrors(t *testing.T) {
+	cases := map[string]map[string]string{
+		"no token":           {},
+		"short token":        {"JSP_UPLOAD_TOKEN": "short"},
+		"both token sources": {"JSP_UPLOAD_TOKEN": token, "JSP_UPLOAD_TOKEN_FILE": "/x"},
+		"missing token file": {"JSP_UPLOAD_TOKEN_FILE": "/does/not/exist"},
+		"bad anonymous flag": {"JSP_UPLOAD_TOKEN": token, "JSP_ALLOW_ANONYMOUS_UPLOADS": "yes please"},
+		"bad body limit":     {"JSP_UPLOAD_TOKEN": token, "JSP_MAX_BODY_BYTES": "0"},
+		"bad proxy":          {"JSP_UPLOAD_TOKEN": token, "JSP_TRUSTED_PROXIES": "nope"},
+		"short anon token":   {"JSP_UPLOAD_TOKEN": "short", "JSP_ALLOW_ANONYMOUS_UPLOADS": "true"},
+	}
+	for name, env := range cases {
+		if _, err := loadConfig(envFrom(env)); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
+	_, err := loadConfig(envFrom(map[string]string{}))
+	if !strings.Contains(err.Error(), "JSP_UPLOAD_TOKEN") {
+		t.Errorf("unhelpful error: %v", err)
+	}
+}
+
+func TestConfigAnonymousWithoutToken(t *testing.T) {
+	c, err := loadConfig(envFrom(map[string]string{"JSP_ALLOW_ANONYMOUS_UPLOADS": "true"}))
+	if err != nil || !c.AllowAnonymous || c.Token != "" {
+		t.Errorf("%+v %v", c, err)
+	}
+}

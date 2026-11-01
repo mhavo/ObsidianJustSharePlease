@@ -1,5 +1,9 @@
+import type {LanguageSetting} from "./i18n";
+
 export const defaultSettings: JSPSettings = {
-    url: "https://jsp.ellpeck.de",
+    url: "",
+    token: "",
+    language: "auto",
     shared: [],
     stripFrontmatter: true,
     includeNoteName: true,
@@ -10,6 +14,8 @@ export const defaultSettings: JSPSettings = {
 export interface JSPSettings {
 
     url: string;
+    token: string;
+    language: LanguageSetting;
     shared: SharedItem[];
     stripFrontmatter: boolean;
     includeNoteName: boolean;
