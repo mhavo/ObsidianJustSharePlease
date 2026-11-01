@@ -1,9 +1,9 @@
-﻿import {ButtonComponent, ItemView, TFile, WorkspaceLeaf} from "obsidian";
+import {ButtonComponent, ItemView, TFile, WorkspaceLeaf} from "obsidian";
 import JustSharePleasePlugin, {removeExtension} from "./main";
 
 export class JSPView extends ItemView {
 
-    public static readonly type: string = "jsp-view";
+    public static readonly type: string = "jsp-selfhosted-view";
 
     private readonly plugin: JustSharePleasePlugin;
 
@@ -23,16 +23,16 @@ export class JSPView extends ItemView {
                 if (shared.path.match(/[/\\]/))
                     div.createSpan({cls: "just-share-please-shared-path", text: removeExtension(shared.path)});
                 if (!file)
-                    div.createEl("em", {cls: "just-share-please-shared-path", text: "File does not exist anymore"});
+                    div.createEl("em", {cls: "just-share-please-shared-path", text: this.plugin.t("view.fileMissing")});
                 new ButtonComponent(div)
                     .setClass("clickable-icon")
-                    .setTooltip("Copy JSP link")
+                    .setTooltip(this.plugin.t("action.copy"))
                     .setIcon("link")
                     .onClick(async () => this.plugin.copyShareLink(shared));
                 if (file) {
                     new ButtonComponent(div)
                         .setClass("clickable-icon")
-                        .setTooltip("Open in Obsidian")
+                        .setTooltip(this.plugin.t("action.open"))
                         .setIcon("edit")
                         .onClick(async e => {
                             let leaf = this.app.workspace.getLeaf(e.ctrlKey);
@@ -41,18 +41,18 @@ export class JSPView extends ItemView {
                         });
                     new ButtonComponent(div)
                         .setClass("clickable-icon")
-                        .setTooltip("Update in JSP")
+                        .setTooltip(this.plugin.t("action.update"))
                         .setIcon("share")
                         .onClick(async () => this.plugin.updateFile(shared, file));
                 }
                 new ButtonComponent(div)
                     .setClass("clickable-icon")
-                    .setTooltip("Delete from JSP")
+                    .setTooltip(this.plugin.t("action.delete"))
                     .setIcon("trash")
                     .onClick(async () => this.plugin.deleteFile(shared));
             }
         } else {
-            content.createSpan({text: "You have not shared any items yet."});
+            content.createSpan({text: this.plugin.t("view.empty")});
         }
     }
 
@@ -61,7 +61,7 @@ export class JSPView extends ItemView {
     }
 
     public getDisplayText(): string {
-        return "Just Share Please";
+        return this.plugin.t("view.title");
     }
 
     public getViewType(): string {
