@@ -101,9 +101,7 @@ func (s *Store) readMeta(id string) (Meta, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return Meta{}, fmt.Errorf("meta %s: %w", id, err)
 	}
-	if m.ID == "" {
-		m.ID = id
-	}
+	m.ID = id // the validated file name is authoritative, never the file content
 	return m, nil
 }
 
@@ -123,7 +121,7 @@ func (s *Store) Create(content string) (Share, error) {
 		m := Meta{ID: id, PasswordSHA256: hashPassword(password), Created: now, Updated: now}
 		err := s.writeContent(id, content)
 		if err == nil {
-			err = s.writeMeta(m)
+			err = s.writeMeta(id, m)
 		}
 		unlock()
 		if err != nil {
@@ -146,7 +144,7 @@ func (s *Store) Update(id, password, content string) error {
 		return err
 	}
 	m.Updated = s.now().Unix()
-	return s.writeMeta(m)
+	return s.writeMeta(id, m)
 }
 
 func (s *Store) Delete(id, password string) error {
@@ -194,13 +192,15 @@ func (s *Store) writeContent(id, content string) error {
 	return writeAtomic(s.contentPath(id), []byte(content))
 }
 
-func (s *Store) writeMeta(m Meta) error {
+// writeMeta stores m under the already validated id.
+func (s *Store) writeMeta(id string, m Meta) error {
 	m.Version = MetaVersion
+	m.ID = id
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
-	return writeAtomic(s.metaPath(m.ID), b)
+	return writeAtomic(s.metaPath(id), b)
 }
 
 // writeAtomic writes via a temp file in the same directory, fsyncs it and

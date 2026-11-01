@@ -20,15 +20,21 @@ import (
 	"github.com/mhavo/ObsidianJustSharePlease/server/internal/store"
 )
 
-// Failed write attempts allowed per client before 429, refilled over failureWindow.
+// Per-client limits: failed write attempts (refilled over failureWindow) and,
+// in anonymous mode, creates without a valid token (refilled over anonCreateWindow).
 const (
-	failureBurst  = 10
-	failureWindow = time.Minute
+	failureBurst     = 10
+	failureWindow    = time.Minute
+	anonCreateBurst  = 30
+	anonCreateWindow = time.Hour
 )
 
-const viewerCSP = "default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; " +
-	"style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; " +
-	"font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; " +
+// viewerCSP limits jsDelivr to npm packages and the highlight.js repo
+// (not arbitrary GitHub repos via /gh/).
+const viewerCSP = "default-src 'none'; " +
+	"script-src 'self' https://cdn.jsdelivr.net/npm/ https://cdn.jsdelivr.net/gh/highlightjs/; " +
+	"style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net/npm/ https://cdn.jsdelivr.net/gh/highlightjs/ https://fonts.googleapis.com; " +
+	"font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net/npm/; " +
 	"img-src 'self' data: https:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 // apiCSP applies to API responses, which are never meant to render as documents.
@@ -48,7 +54,8 @@ type Config struct {
 type server struct {
 	Config
 	tokenHash [32]byte
-	limiter   *limiter
+	limiter   *limiter // failed auth
+	creates   *limiter // anonymous creates
 }
 
 // New returns the complete HTTP handler.
@@ -60,6 +67,7 @@ func New(cfg Config) http.Handler {
 		Config:    cfg,
 		tokenHash: sha256.Sum256([]byte(cfg.Token)),
 		limiter:   newLimiter(failureBurst, failureWindow, time.Now),
+		creates:   newLimiter(anonCreateBurst, anonCreateWindow, time.Now),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/share.php", s.share)
@@ -209,15 +217,15 @@ func isHeader(rec []string) bool {
 }
 
 func (s *server) write(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r, s.TrustedProxies)
+	ip := limitKey(clientIP(r, s.TrustedProxies))
 	trusted := s.validToken(r)
 	if !trusted {
-		if s.limiter.blocked(ip) {
+		if s.limiter.blocked(ip) || (r.Method == http.MethodPost && s.creates.blocked(ip)) {
 			text(w, http.StatusTooManyRequests, "Too many requests")
 			return
 		}
 		if !s.AllowAnonymous {
-			s.limiter.fail(ip)
+			s.limiter.charge(ip)
 			s.Logger.Warn("invalid token", "ip", ip)
 			text(w, http.StatusUnauthorized, "Invalid token")
 			return
@@ -250,6 +258,9 @@ func (s *server) write(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var share store.Share
 		if share, err = s.Store.Create(content); err == nil {
+			if !trusted {
+				s.creates.charge(ip)
+			}
 			writeJSON(w, http.StatusOK, share)
 			return
 		}
@@ -259,7 +270,7 @@ func (s *server) write(w http.ResponseWriter, r *http.Request) {
 		err = s.Store.Delete(id, password)
 	}
 	if errors.Is(err, store.ErrUnauthorized) && !trusted {
-		s.limiter.fail(ip)
+		s.limiter.charge(ip)
 	}
 	if err != nil {
 		s.storeError(w, err)

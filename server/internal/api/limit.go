@@ -1,9 +1,11 @@
 package api
 
 import (
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -11,12 +13,14 @@ import (
 
 const maxTrackedClients = 10000
 
-// limiter is a per-client token bucket that only counts failed write
-// attempts. A client is blocked while its bucket is empty.
+// limiter is a per-client token bucket. Callers charge it for events they
+// want to limit (failed auth, anonymous creates); a client is blocked while
+// its bucket is empty. The number of tracked clients is bounded.
 type limiter struct {
 	mu      sync.Mutex
 	burst   float64
 	rate    float64 // tokens per second
+	max     int
 	now     func() time.Time
 	clients map[string]*bucket
 }
@@ -30,50 +34,70 @@ func newLimiter(burst int, per time.Duration, now func() time.Time) *limiter {
 	return &limiter{
 		burst:   float64(burst),
 		rate:    float64(burst) / per.Seconds(),
+		max:     maxTrackedClients,
 		now:     now,
 		clients: make(map[string]*bucket),
 	}
 }
 
-// refill returns the client's bucket topped up to now, or nil if untracked.
-func (l *limiter) refill(key string, now time.Time) *bucket {
-	b := l.clients[key]
-	if b != nil {
-		b.tokens = min(l.burst, b.tokens+now.Sub(b.last).Seconds()*l.rate)
-		b.last = now
-	}
-	return b
+// level is the bucket's token count at now.
+func (l *limiter) level(b *bucket, now time.Time) float64 {
+	return min(l.burst, b.tokens+now.Sub(b.last).Seconds()*l.rate)
 }
 
 func (l *limiter) blocked(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	b := l.refill(key, l.now())
-	return b != nil && b.tokens < 1
+	b := l.clients[key]
+	return b != nil && l.level(b, l.now()) < 1
 }
 
-func (l *limiter) fail(key string) {
+func (l *limiter) charge(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
-	b := l.refill(key, now)
+	b := l.clients[key]
 	if b == nil {
-		if len(l.clients) >= maxTrackedClients {
-			l.prune(now)
+		if len(l.clients) >= l.max {
+			l.evict(now)
 		}
 		b = &bucket{tokens: l.burst, last: now}
 		l.clients[key] = b
 	}
-	b.tokens = max(0, b.tokens-1)
+	b.tokens = max(0, l.level(b, now)-1)
+	b.last = now
 }
 
-// prune drops clients whose bucket has refilled completely.
-func (l *limiter) prune(now time.Time) {
-	for k := range l.clients {
-		if l.refill(k, now).tokens >= l.burst {
+// evict shrinks the map to 90% of max: refilled buckets go first, then the
+// least recently charged. Freeing 10% at a time amortizes the O(n log n) cost.
+func (l *limiter) evict(now time.Time) {
+	target := min(l.max-1, l.max*9/10)
+	for k, b := range l.clients {
+		if l.level(b, now) >= l.burst {
 			delete(l.clients, k)
 		}
 	}
+	if len(l.clients) <= target {
+		return
+	}
+	keys := slices.Collect(maps.Keys(l.clients))
+	slices.SortFunc(keys, func(a, b string) int { return l.clients[a].last.Compare(l.clients[b].last) })
+	for _, k := range keys[:len(keys)-target] {
+		delete(l.clients, k)
+	}
+}
+
+// limitKey groups IPv6 clients by /64, since one host usually owns a whole /64.
+func limitKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	addr = addr.Unmap()
+	if addr.Is4() {
+		return addr.String()
+	}
+	return netip.PrefixFrom(addr, 64).Masked().String()
 }
 
 // clientIP returns the peer address, or, when the peer is a trusted proxy,

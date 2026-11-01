@@ -256,3 +256,38 @@ func TestConcurrentUpdates(t *testing.T) {
 		t.Errorf("temp files left behind: %v", entries)
 	}
 }
+
+func TestMetaIDNeverTakenFromFileContent(t *testing.T) {
+	s, dir := newStore(t)
+	a, _ := s.Create("a")
+	b, _ := s.Create("b")
+	bMeta, _ := os.ReadFile(filepath.Join(dir, b.ID+".json"))
+
+	// A's meta claims to be B (copied/tampered), and C's meta claims a traversal path.
+	sum := sha256.Sum256([]byte(a.Password))
+	os.WriteFile(filepath.Join(dir, a.ID+".json"),
+		[]byte(`{"version":2,"id":"`+b.ID+`","password_sha256":"`+hex.EncodeToString(sum[:])+`","created":1}`), 0o600)
+	const c, pw = "cccccccc", "secret"
+	os.WriteFile(filepath.Join(dir, c+".md"), []byte("c"), 0o600)
+	os.WriteFile(filepath.Join(dir, c+".json"), []byte(`{"id":"../escaped","password":"`+pw+`","created":1}`), 0o600)
+
+	if m, err := s.Meta(a.ID); err != nil || m.ID != a.ID {
+		t.Errorf("Meta(a).ID = %q, %v", m.ID, err)
+	}
+	if err := s.Update(a.ID, a.Password, "a2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Update(c, pw, "c2"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, _ := os.ReadFile(filepath.Join(dir, b.ID+".json")); string(got) != string(bMeta) {
+		t.Error("B's meta was overwritten through A")
+	}
+	if readMeta(t, dir, a.ID)["id"] != a.ID || readMeta(t, dir, c)["id"] != c {
+		t.Error("meta id not corrected to file name")
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "escaped.json")); err == nil {
+		t.Error("wrote outside the data dir")
+	}
+}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -163,6 +164,8 @@ func TestPostErrors(t *testing.T) {
 		header: map[string]string{"Authorization": testToken}}), 401, "Invalid token")
 	expect(t, e.do(req{method: "POST", target: "/share.php", body: `{}`, header: auth()}), 400, "No content")
 	expect(t, e.do(req{method: "POST", target: "/share.php", body: `{"content":1}`, header: auth()}), 400, "No content")
+	expect(t, e.do(req{method: "POST", target: "/share.php", body: `{"content":null}`, header: auth()}), 400, "No content")
+	expect(t, e.do(req{method: "PATCH", target: "/share.php?id=abcdef12", body: `{"content":null}`, header: auth("Password", "x")}), 400, "No content")
 	expect(t, e.do(req{method: "POST", target: "/share.php", body: `not json`, header: auth()}), 400, "No content")
 	expect(t, e.do(req{method: "POST", target: "/share.php", header: auth()}), 400, "No content")
 	big := `{"content":"` + strings.Repeat("a", 2000) + `"}`
@@ -254,7 +257,7 @@ func TestHealthz(t *testing.T) {
 	expect(t, e.do(req{method: "GET", target: "/healthz"}), 200, "ok")
 }
 
-const wantCSP = "default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+const wantCSP = "default-src 'none'; script-src 'self' https://cdn.jsdelivr.net/npm/ https://cdn.jsdelivr.net/gh/highlightjs/; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net/npm/ https://cdn.jsdelivr.net/gh/highlightjs/ https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net/npm/; img-src 'self' data: https:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 func TestStaticFiles(t *testing.T) {
 	e := newEnv(t)
@@ -332,4 +335,29 @@ func TestAnonymousModeStillAcceptsToken(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("anonymous post: %d %s", w.Code, w.Body)
 	}
+}
+
+func TestAnonymousCreatesAreLimitedPerClient(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.AllowAnonymous = true })
+	anon := req{method: "POST", target: "/share.php", body: `{"content":"x"}`}
+	for range anonCreateBurst {
+		if w := e.do(anon); w.Code != 200 {
+			t.Fatalf("anonymous create: %d %s", w.Code, w.Body)
+		}
+	}
+	expect(t, e.do(anon), 429, "Too many requests")
+	e.create("token is never limited")
+}
+
+func TestRateLimitGroupsIPv6By64(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")} })
+	bad := func(ip string) req {
+		return req{method: "POST", target: "/share.php", body: `{"content":"x"}`,
+			header: map[string]string{"Authorization": "Bearer wrong", "X-Forwarded-For": ip}}
+	}
+	for i := range failureBurst {
+		e.do(bad(fmt.Sprintf("2001:db8:1:2::%x", i+1)))
+	}
+	expect(t, e.do(bad("2001:db8:1:2:ffff::1")), 429, "Too many requests")
+	expect(t, e.do(bad("2001:db8:1:3::1")), 401, "Invalid token")
 }
