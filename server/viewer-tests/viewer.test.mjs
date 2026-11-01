@@ -82,3 +82,31 @@ test("translate looks up a key and falls back to English, then the key", () => {
     assert.equal(i18n.translate("xx", "home"), "Home");
     assert.equal(i18n.translate("fi", "noSuchKey"), "noSuchKey");
 });
+
+test("safeFileName removes path separators and characters invalid in file names", () => {
+    assert.equal(lib.safeFileName("Notes/../Daily\\Plan: a*b?\"<>|"), "Notes..DailyPlan ab");
+    assert.equal(lib.safeFileName("a\u0000b\nc"), "abc");
+    assert.equal(lib.safeFileName("  ...  "), "note");
+    assert.equal(lib.safeFileName(""), "note");
+    assert.equal(lib.safeFileName(undefined), "note");
+    assert.equal(lib.safeFileName("Hyvä muistiinpano #1"), "Hyvä muistiinpano #1");
+});
+
+test("buildObsidianNewUrl cannot be used to inject extra parameters", () => {
+    const url = lib.buildObsidianNewUrl("Notes&overwrite=true&file=Daily/Plan", "body & more=1#x");
+    assert.ok(url.startsWith("obsidian://new?"));
+    const params = new URLSearchParams(url.substring("obsidian://new?".length));
+    assert.deepEqual([...params.keys()], ["name", "content"]);
+    assert.equal(params.get("name"), "Notes&overwrite=true&file=DailyPlan");
+    assert.equal(params.get("content"), "body & more=1#x");
+    assert.ok(!url.includes("&overwrite"));
+});
+
+test("buildObsidianNewUrl encodes spaces and unicode in the name", () => {
+    const url = lib.buildObsidianNewUrl("Hyvä nimi", "x");
+    assert.equal(url, "obsidian://new?name=Hyv%C3%A4%20nimi&content=x");
+});
+
+test("buildDownloadHref produces a plain-text data URL", () => {
+    assert.equal(lib.buildDownloadHref("# a&b"), "data:text/plain;charset=utf-8,%23%20a%26b");
+});

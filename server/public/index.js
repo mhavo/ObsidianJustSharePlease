@@ -1,4 +1,4 @@
-const { getIdFromHash, classifyId, formatParts } = JspViewer;
+const { getIdFromHash, classifyId, formatParts, safeFileName, buildObsidianNewUrl, buildDownloadHref } = JspViewer;
 const LANGUAGE_STORAGE_KEY = "jsp-language";
 
 let md = markdownit({
@@ -78,7 +78,8 @@ function display() {
         dataType: "text",
         success: t => {
             currentMessage = null;
-            main.html(DOMPurify.sanitize(md.render(t)));
+            // assigned via innerHTML (not jQuery .html()) so that nothing that slipped through sanitizing runs as a script
+            main[0].innerHTML = DOMPurify.sanitize(md.render(t));
 
             $(() => {
                 // change title
@@ -96,9 +97,9 @@ function display() {
                     $(window).scrollTop($(element).offset().top);
 
                 // set download links
-                download.attr("download", `${window.document.title}.md`);
-                download.attr("href", `data:text/plain;charset=utf-8,${encodeURIComponent(t)}`);
-                open.attr("href", `obsidian://new?name=${encodeURI(window.document.title)}&content=${encodeURIComponent(t)}`);
+                download.attr("download", `${safeFileName(window.document.title)}.md`);
+                download.attr("href", buildDownloadHref(t));
+                open.attr("href", buildObsidianNewUrl(window.document.title, t));
 
                 // load note footer with publication time (only for shared notes)
                 if (kind === "valid") {

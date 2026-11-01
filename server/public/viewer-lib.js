@@ -56,7 +56,29 @@
         return parts;
     }
 
-    const api = { ID_PATTERN, getIdFromHash, classifyId, escapeHtml, formatParts };
+    // Makes a note title usable as a file name: removes path separators,
+    // characters that are invalid in file names and control characters.
+    function safeFileName(title) {
+        const name = String(title ?? "")
+            .replace(/[\u0000-\u001f\u007f/\\:*?"<>|]/g, "")
+            .trim();
+        return name.replace(/^\.+$/, "") || "note";
+    }
+
+    // Every value is encoded with encodeURIComponent, so a title such as
+    // "x&overwrite=true&file=..." cannot add parameters to the URL.
+    function buildObsidianNewUrl(title, content) {
+        return `obsidian://new?name=${encodeURIComponent(safeFileName(title))}&content=${encodeURIComponent(content)}`;
+    }
+
+    function buildDownloadHref(content) {
+        return `data:text/plain;charset=utf-8,${encodeURIComponent(content)}`;
+    }
+
+    const api = {
+        ID_PATTERN, getIdFromHash, classifyId, escapeHtml, formatParts,
+        safeFileName, buildObsidianNewUrl, buildDownloadHref
+    };
     if (typeof module === "object" && module.exports)
         module.exports = api;
     else
